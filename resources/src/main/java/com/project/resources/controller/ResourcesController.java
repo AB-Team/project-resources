@@ -18,11 +18,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
-import java.io.BufferedReader;
-import java.io.InputStream;
-import java.io.InputStreamReader;
+import java.io.*;
 import java.util.*;
 import java.util.stream.Collectors;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 @RequestMapping("/resources/")
 @RestController
@@ -42,6 +42,8 @@ public class ResourcesController {
         HashMap ids = new HashMap<String, String>(files.length + 1, 1);
 
         Arrays.stream(files).forEach(file -> {
+
+            logger.info(file.getContentType());
 
             try {
                 String id = gridFSOperations.store(file.getInputStream(), file.getOriginalFilename(), file.getContentType(), metaData).toString();
@@ -72,15 +74,26 @@ public class ResourcesController {
     }
 
     @GetMapping("/download/all/{username}")
-    public ResponseEntity<List> downloadDocuments(@PathVariable("username") String username){
+    public ResponseEntity<File> downloadDocuments(@PathVariable("username") String username){
 
         GridFSFindIterable files = gridFSOperations.find(new Query(Criteria.where("metadata.username").is(username)));
 
         logger.info("Got files: " + files.toString());
 
-        List<ResourceFile> resourceList = new ArrayList();
-
         Iterator<GridFSFile> itr = files.iterator();
+
+        File zippedFile = null;
+        FileOutputStream fos = null;
+        ZipOutputStream zipOut = null;
+
+        try {
+            zippedFile = new File("resources.zip");
+            fos = new FileOutputStream(zippedFile);
+            zipOut = new ZipOutputStream(fos);
+        }catch (FileNotFoundException ex){
+            logger.warn(ex.getMessage());
+            return ResponseEntity.badRequest().build();
+        }
 
         while(itr.hasNext()){
             GridFSFile file = itr.next();
@@ -89,31 +102,37 @@ public class ResourcesController {
 
             logger.info("Got Resource: " + resource.toString());
 
-            if(resource != null){
-                try {
-                    ResourceFile resourceFile = new ResourceFile();
-                    resourceFile.setName(file.getFilename());
-                    resourceFile.setResource(getStringFromStream(resource.getInputStream()));
-                    resourceList.add(resourceFile);
-                }catch (Exception ex){
-                    logger.warn("Got in trouble while setting resource string: "+ ex.getMessage());
+            try{
+                if(resource != null){
+
+                    InputStream fileInputStream = resource.getInputStream();
+
+                    ZipEntry zipEntry = new ZipEntry(resource.getFilename());
+                    zipOut.putNextEntry(zipEntry);
+
+                    byte[] bytes = new byte[1024];
+                    int length;
+                    while((length = fileInputStream.read(bytes)) >= 0) {
+                        zipOut.write(bytes, 0, length);
+                    }
+                    fileInputStream.close();
                 }
+            }catch (IOException ex){
+                logger.warn(ex.getMessage());
             }
         }
 
-        logger.info("Final response size: " + resourceList.size());
+        try {
+            zipOut.close();
+            fos.close();
+        }catch (IOException ex){
+            logger.warn(ex.getMessage());
+        }
 
         try {
-            return ResponseEntity.ok().contentType(MediaType.APPLICATION_JSON).body(resourceList);
+            return ResponseEntity.ok().contentType(MediaType.parseMediaType("application/zip")).body(zippedFile);
         }catch(Exception ex){
             return ResponseEntity.badRequest().build();
         }
-    }
-
-    public String getStringFromStream(InputStream inputStream){
-
-        BufferedReader br = new BufferedReader(new InputStreamReader(inputStream));
-
-        return br.lines().collect(Collectors.joining(System.lineSeparator()));
     }
 }
